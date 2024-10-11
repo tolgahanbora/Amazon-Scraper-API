@@ -2,7 +2,6 @@ const express = require('express');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const cacheManager = require('cache-manager');
-const memoryCache = cacheManager.caching({ store: 'memory', max: 100, ttl: 60 * 5 }); // 5 dakika önbellek
 
 const PORT = process.env.PORT || 5000;
 const app = express();
@@ -18,24 +17,42 @@ app.use(limiter);
 
 const returnScraperApiUrl = (apiKey) => `http://api.scraperapi.com?api_key=${apiKey}&autoparse=true`;
 
+let memoryCache;
+
+async function setupCache() {
+  memoryCache = await cacheManager.caching('memory', { 
+    max: 100, 
+    ttl: 60 * 5 // 5 dakika önbellek
+  });
+}
+
 // Önbellek middleware'i
 const cacheMiddleware = (duration) => {
-  return (req, res, next) => {
+  return async (req, res, next) => {
+    if (!memoryCache) {
+      return next();
+    }
     let key = req.originalUrl || req.url;
-    memoryCache.get(key, (err, result) => {
+    try {
+      const result = await memoryCache.get(key);
       if (result) {
         return res.json(result);
       } else {
         res.originalJson = res.json;
-        res.json = (body) => {
-          memoryCache.set(key, body, { ttl: duration }, (err) => {
-            if (err) console.error(err);
-          });
+        res.json = async (body) => {
+          try {
+            await memoryCache.set(key, body, { ttl: duration });
+          } catch (err) {
+            console.error(err);
+          }
           res.originalJson(body);
         };
         next();
       }
-    });
+    } catch (err) {
+      console.error(err);
+      next();
+    }
   };
 };
 
@@ -152,4 +169,9 @@ app.get('/ebay/category/:categoryId', cacheMiddleware(300), async (req, res) => 
     }
 });
 
-app.listen(PORT, () => console.log(`Server Running on Port: ${PORT}`));
+async function startServer() {
+  await setupCache();
+  app.listen(PORT, () => console.log(`Server Running on Port: ${PORT}`));
+}
+
+startServer();
